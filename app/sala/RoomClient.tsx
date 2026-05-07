@@ -47,6 +47,18 @@ export default function RoomClient() {
   const [error, setError] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [camOff, setCamOff] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  function log(...parts: unknown[]) {
+    const line = parts
+      .map((p) =>
+        typeof p === "string" ? p : (() => { try { return JSON.stringify(p); } catch { return String(p); } })()
+      )
+      .join(" ");
+    console.log("[rtc]", line);
+    const ts = new Date().toLocaleTimeString();
+    setLogs((prev) => [...prev.slice(-99), `${ts}  ${line}`]);
+  }
 
   const counterpartLabel = useMemo(
     () => (rol === "cliente" ? "asesor" : "cliente"),
@@ -108,24 +120,24 @@ export default function RoomClient() {
     if (pcInitRef.current) return pcInitRef.current;
     pcInitRef.current = (async () => {
       const pc = await newPeerConnection();
-      console.log("[rtc] pc created");
+      log("pc created");
 
       const stream = localStreamRef.current!;
       for (const t of stream.getTracks()) {
         pc.addTrack(t, stream);
-        console.log("[rtc] addTrack", t.kind, t.id);
+        log("addTrack", t.kind, t.id);
       }
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
-          console.log("[rtc] local ice", e.candidate.type, e.candidate.protocol);
+          log("local ice", e.candidate.type, e.candidate.protocol);
           sendSignal({ type: "ice", candidate: e.candidate.toJSON() });
         } else {
-          console.log("[rtc] local ice gathering complete");
+          log("local ice gathering complete");
         }
       };
       pc.ontrack = (e) => {
-        console.log("[rtc] ontrack", e.track.kind, "streams=", e.streams.length);
+        log("ontrack", e.track.kind, "streams=", e.streams.length);
         if (!remoteVideoRef.current) return;
         if (!remoteStreamRef.current) {
           remoteStreamRef.current = new MediaStream();
@@ -133,21 +145,21 @@ export default function RoomClient() {
         }
         remoteStreamRef.current.addTrack(e.track);
         remoteVideoRef.current.play().catch((err) => {
-          console.warn("[rtc] remote play error", err);
+          log("remote play error", String(err));
         });
       };
       pc.oniceconnectionstatechange = () => {
-        console.log("[rtc] iceConnectionState", pc.iceConnectionState);
+        log("iceConnectionState", pc.iceConnectionState);
       };
       pc.onicegatheringstatechange = () => {
-        console.log("[rtc] iceGatheringState", pc.iceGatheringState);
+        log("iceGatheringState", pc.iceGatheringState);
       };
       pc.onsignalingstatechange = () => {
-        console.log("[rtc] signalingState", pc.signalingState);
+        log("signalingState", pc.signalingState);
       };
       pc.onconnectionstatechange = () => {
         const s = pc.connectionState;
-        console.log("[rtc] connectionState", s);
+        log("connectionState", s);
         if (s === "connected") setStatus("connected");
       };
       pcRef.current = pc;
@@ -158,26 +170,26 @@ export default function RoomClient() {
 
   async function createOffer() {
     const pc = await ensurePc();
-    console.log("[rtc] creating offer");
+    log("creating offer");
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    console.log("[rtc] offer sent");
+    log("offer sent");
     sendSignal({ type: "offer", sdp: offer.sdp! });
   }
 
   async function handleSignal(msg: SignalMsg) {
     const pc = await ensurePc();
     if (msg.type === "offer") {
-      console.log("[rtc] received offer");
+      log("received offer");
       await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
       remoteSetRef.current = true;
       await drainIce();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      console.log("[rtc] answer sent");
+      log("answer sent");
       sendSignal({ type: "answer", sdp: answer.sdp! });
     } else if (msg.type === "answer") {
-      console.log("[rtc] received answer");
+      log("received answer");
       await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
       remoteSetRef.current = true;
       await drainIce();
@@ -185,16 +197,16 @@ export default function RoomClient() {
       if (remoteSetRef.current) {
         try {
           await pc.addIceCandidate(msg.candidate);
-          console.log("[rtc] remote ice added");
+          log("remote ice added");
         } catch (e) {
-          console.warn("[rtc] ice add error", e);
+          log("ice add error", String(e));
         }
       } else {
         pendingIceRef.current.push(msg.candidate);
-        console.log("[rtc] remote ice queued (no remoteDescription yet)");
+        log("remote ice queued");
       }
     } else if (msg.type === "bye") {
-      console.log("[rtc] received bye");
+      log("received bye");
       setStatus("ended");
       cleanup();
     }
@@ -374,6 +386,30 @@ export default function RoomClient() {
           Colgar
         </button>
       </div>
+
+      <details className="mt-6 glass rounded-2xl p-4 text-sm" open>
+        <summary className="cursor-pointer select-none flex items-center gap-2">
+          <span className="font-semibold">Diagnóstico WebRTC</span>
+          <span className="text-muted">({logs.length} eventos)</span>
+        </summary>
+        <pre
+          className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5 text-muted"
+          style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+        >
+          {logs.length === 0 ? "Esperando eventos…" : logs.join("\n")}
+        </pre>
+        <div className="mt-2 flex gap-2">
+          <button
+            className="btn btn-ghost"
+            onClick={() => navigator.clipboard.writeText(logs.join("\n")).catch(() => {})}
+          >
+            Copiar log
+          </button>
+          <button className="btn btn-ghost" onClick={() => setLogs([])}>
+            Limpiar
+          </button>
+        </div>
+      </details>
 
       <p className="mt-6 text-xs text-muted text-center">
         Conexión peer-to-peer cifrada (DTLS-SRTP). El servidor solo intercambia
