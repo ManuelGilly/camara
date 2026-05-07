@@ -239,7 +239,8 @@ async function pollRedis(peerId: string) {
   return {
     ok: true as const,
     partnerId: p.partnerId,
-    initiator: p.initiator === "1",
+    // Upstash deserializa "1" como number 1; comparar laxo cubre ambos casos.
+    initiator: Number(p.initiator) === 1,
     messages,
   };
 }
