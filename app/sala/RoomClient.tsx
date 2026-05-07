@@ -33,7 +33,9 @@ export default function RoomClient() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const pcInitRef = useRef<Promise<RTCPeerConnection> | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
   const remoteSetRef = useRef(false);
   const partnerIdRef = useRef<string | null>(null);
@@ -101,53 +103,81 @@ export default function RoomClient() {
     startPolling();
   }
 
-  async function ensurePc() {
-    if (pcRef.current) return pcRef.current;
-    const pc = await newPeerConnection();
-    pcRef.current = pc;
+  function ensurePc(): Promise<RTCPeerConnection> {
+    if (pcRef.current) return Promise.resolve(pcRef.current);
+    if (pcInitRef.current) return pcInitRef.current;
+    pcInitRef.current = (async () => {
+      const pc = await newPeerConnection();
+      console.log("[rtc] pc created");
 
-    const stream = localStreamRef.current!;
-    for (const t of stream.getTracks()) pc.addTrack(t, stream);
+      const stream = localStreamRef.current!;
+      for (const t of stream.getTracks()) {
+        pc.addTrack(t, stream);
+        console.log("[rtc] addTrack", t.kind, t.id);
+      }
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        sendSignal({ type: "ice", candidate: e.candidate.toJSON() });
-      }
-    };
-    pc.ontrack = (e) => {
-      const [remote] = e.streams;
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remote;
-        remoteVideoRef.current.play().catch(() => {});
-      }
-    };
-    pc.onconnectionstatechange = () => {
-      const s = pc.connectionState;
-      if (s === "connected") setStatus("connected");
-      if (s === "failed" || s === "disconnected" || s === "closed") {
-        // dejamos al servidor / partner manejar el cierre
-      }
-    };
-    return pc;
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log("[rtc] local ice", e.candidate.type, e.candidate.protocol);
+          sendSignal({ type: "ice", candidate: e.candidate.toJSON() });
+        } else {
+          console.log("[rtc] local ice gathering complete");
+        }
+      };
+      pc.ontrack = (e) => {
+        console.log("[rtc] ontrack", e.track.kind, "streams=", e.streams.length);
+        if (!remoteVideoRef.current) return;
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = new MediaStream();
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        }
+        remoteStreamRef.current.addTrack(e.track);
+        remoteVideoRef.current.play().catch((err) => {
+          console.warn("[rtc] remote play error", err);
+        });
+      };
+      pc.oniceconnectionstatechange = () => {
+        console.log("[rtc] iceConnectionState", pc.iceConnectionState);
+      };
+      pc.onicegatheringstatechange = () => {
+        console.log("[rtc] iceGatheringState", pc.iceGatheringState);
+      };
+      pc.onsignalingstatechange = () => {
+        console.log("[rtc] signalingState", pc.signalingState);
+      };
+      pc.onconnectionstatechange = () => {
+        const s = pc.connectionState;
+        console.log("[rtc] connectionState", s);
+        if (s === "connected") setStatus("connected");
+      };
+      pcRef.current = pc;
+      return pc;
+    })();
+    return pcInitRef.current;
   }
 
   async function createOffer() {
     const pc = await ensurePc();
+    console.log("[rtc] creating offer");
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    console.log("[rtc] offer sent");
     sendSignal({ type: "offer", sdp: offer.sdp! });
   }
 
   async function handleSignal(msg: SignalMsg) {
     const pc = await ensurePc();
     if (msg.type === "offer") {
+      console.log("[rtc] received offer");
       await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
       remoteSetRef.current = true;
       await drainIce();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      console.log("[rtc] answer sent");
       sendSignal({ type: "answer", sdp: answer.sdp! });
     } else if (msg.type === "answer") {
+      console.log("[rtc] received answer");
       await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
       remoteSetRef.current = true;
       await drainIce();
@@ -155,13 +185,16 @@ export default function RoomClient() {
       if (remoteSetRef.current) {
         try {
           await pc.addIceCandidate(msg.candidate);
+          console.log("[rtc] remote ice added");
         } catch (e) {
-          console.warn("ice add error", e);
+          console.warn("[rtc] ice add error", e);
         }
       } else {
         pendingIceRef.current.push(msg.candidate);
+        console.log("[rtc] remote ice queued (no remoteDescription yet)");
       }
     } else if (msg.type === "bye") {
+      console.log("[rtc] received bye");
       setStatus("ended");
       cleanup();
     }
@@ -234,6 +267,11 @@ export default function RoomClient() {
         pcRef.current.close();
       } catch {}
       pcRef.current = null;
+    }
+    pcInitRef.current = null;
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((t) => t.stop());
+      remoteStreamRef.current = null;
     }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
