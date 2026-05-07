@@ -17,8 +17,12 @@ const PEER_TTL_S = 30;
 const QUEUE_TTL_S = 60;
 const PARTNER_TTL_S = 60 * 30; // 30 min máx por llamada
 
-const url = process.env.UPSTASH_REDIS_REST_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+// Acepta tanto el naming de Upstash directo como el que inyecta el
+// Marketplace de Vercel (prefijo KV_).
+const url =
+  process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const token =
+  process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 const useRedis = Boolean(url && token);
 
 const redis = useRedis ? new Redis({ url: url!, token: token! }) : null;
